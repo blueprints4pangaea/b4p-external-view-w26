@@ -34,7 +34,7 @@ describe('apiRequest', () => {
   });
 
   test('POST sends JSON', async () => {
-    fetch.mockReturnValue(json(200, { request_id: 'REQ-1', status: 'Under Review' }));
+    fetch.mockReturnValue(json(200, { request_id: 'REQ-1', status: 'Requested' }));
     const payload = { org_name: 'A', org_email: 'a@b.co', items: [{ item_name: 'X', quantity: 1 }] };
     await submitRequest(payload);
     const [, init] = fetch.mock.calls[0];

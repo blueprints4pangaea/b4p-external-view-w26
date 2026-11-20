@@ -134,8 +134,8 @@ def test_availability_etag_changes_after_a_request(big):
     after = big.get("/inventory/availability", headers={"If-None-Match": tag})
     assert after.status_code == 200 and after.headers["etag"] != tag
     assert after.json() != before.json()
-    # ...and denying it gives the units back: the first representation again
-    assert big.patch(f"/requests/{rid}/status", json={"status": "Denied"}, headers=HQ).status_code == 200
+    # ...and fulfilling it stops the hold (sample data: nothing comes off the sheet): the first representation again
+    assert big.patch(f"/requests/{rid}/status", json={"status": "Fulfilled"}, headers=HQ).status_code == 200
     assert big.get("/inventory/availability", headers={"If-None-Match": tag}).status_code == 304
 
 

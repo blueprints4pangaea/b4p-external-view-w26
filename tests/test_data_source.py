@@ -52,7 +52,7 @@ def test_db_request_lifecycle(db_client, no_email):
     email = f"Lifecycle.{__import__('uuid').uuid4().hex[:8]}@Example.org"
     r = db_client.post("/requests", json={"org_name": "Lifecycle " + email, "org_email": email,
                                           "items": [{"item_name": name, "category": "X", "quantity": stock}]})
-    assert r.status_code == 200 and r.json()["status"] == "Under Review"
+    assert r.status_code == 200 and r.json()["status"] == "Requested"
     rid = r.json()["request_id"]
     assert rid.startswith("REQ-")
 
@@ -70,15 +70,15 @@ def test_db_request_lifecycle(db_client, no_email):
     def patch(i, s):
         return db_client.patch(f"/requests/{i}/status", json={"status": s}, headers=HQ)
 
-    assert patch(rid, "Approved").status_code == 200
-    assert db_client.get("/requests", params={"email": email}).json()[0]["Status"] == "Approved"
+    assert patch(rid, "In Progress").status_code == 200
+    assert db_client.get("/requests", params={"email": email}).json()[0]["Status"] == "In Progress"
     assert status_of(name) == "Requested"  # only Approved holds the stock
 
-    assert patch(rid, "Shipped").status_code == 200
+    assert patch(rid, "Fulfilled").status_code == 200
     assert status_of(name) == "Limited"  # shipped stock is assumed deducted from inventory; no permanent brand
     assert len(no_email) == 3  # confirmation + one status email per real status change
 
-    assert patch("REQ-nope", "Shipped").status_code == 404
+    assert patch("REQ-nope", "Fulfilled").status_code == 404
     assert patch(rid, "Bogus").status_code == 422
 
 
@@ -104,7 +104,7 @@ def test_migration_script_idempotent(db_client, tmp_path):
     rid = "REQ-1700000000-001"
     f = tmp_path / "o.json"
     base = {"Request ID": rid, "Org Name": "Migrated Org", "Org Email": "m@x.org", "Category": "C",
-            "Quantity Requested": "4", "Status": "Shipped", "Timestamp": "2026-04-15T17:01:05+00:00",
+            "Quantity Requested": "4", "Status": "Fulfilled", "Timestamp": "2026-04-15T17:01:05+00:00",
             "Review Flag": "TRUE"}
     f.write_text(json.dumps([{**base, "Item Name": "A"}, {**base, "Item Name": "B"}]))
     for _ in range(2):  # second run must be a no-op
@@ -112,7 +112,7 @@ def test_migration_script_idempotent(db_client, tmp_path):
                        env={**__import__("os").environ})
     rows = [r for r in db_client.get("/requests", headers=HQ).json() if r["Request ID"] == rid]
     assert [r["Item Name"] for r in rows] == ["A", "B"]
-    assert rows[0]["Status"] == "Shipped" and rows[0]["Review Flag"] == "TRUE"
+    assert rows[0]["Status"] == "Fulfilled" and rows[0]["Review Flag"] == "TRUE"
     assert rows[0]["Timestamp"].startswith("2026-04-15T17:01:05")
 
 
@@ -123,7 +123,7 @@ def _holds(monkeypatch, inventory, approved):
     monkeypatch.setattr(main.db, "enabled", lambda: False)
     monkeypatch.setattr(main, "_use_sample_data", lambda: True)
     monkeypatch.setattr(main, "_sample_org_request_rows", [
-        {"Request ID": "REQ-1", "Status": "Approved", "Item Name": n, "Quantity Requested": str(q)} for n, q in approved])
+        {"Request ID": "REQ-1", "Status": "In Progress", "Item Name": n, "Quantity Requested": str(q)} for n, q in approved])
     main._inventory_cache.clear()
     r = TestClient(main.app).get("/inventory/availability").json()
     return {a["sheet_row"]: a["remaining"] for a in r}

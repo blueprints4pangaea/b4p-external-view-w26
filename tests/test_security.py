@@ -45,22 +45,22 @@ def test_patch_requires_hq_token(client, monkeypatch, no_email):
     r, _ = _post(client, items=[{"item_name": _name(client), "quantity": 1}])
     rid = r.json()["request_id"]
     url = f"/requests/{rid}/status"
-    assert client.patch(url, json={"status": "Shipped"}).status_code == 401
-    assert client.patch(url, json={"status": "Shipped"}, headers={"X-HQ-Token": "x"}).status_code == 401
+    assert client.patch(url, json={"status": "Fulfilled"}).status_code == 401
+    assert client.patch(url, json={"status": "Fulfilled"}, headers={"X-HQ-Token": "x"}).status_code == 401
     assert len(no_email) == 1  # only the submit confirmation; rejected PATCHes sent nothing
-    assert client.patch(url, json={"status": "Shipped"}, headers=HQ).status_code == 200
+    assert client.patch(url, json={"status": "Fulfilled"}, headers=HQ).status_code == 200
     monkeypatch.delenv("HQ_API_TOKEN")
-    assert client.patch(url, json={"status": "Approved"}, headers=HQ).status_code == 403
+    assert client.patch(url, json={"status": "In Progress"}, headers=HQ).status_code == 403
 
 
 def test_status_email_only_on_real_change(db_client, no_email):
     c = db_client
     r, _ = _post(c, items=[{"item_name": _name(c), "quantity": 1}])
     url = f"/requests/{r.json()['request_id']}/status"
-    assert c.patch(url, json={"status": "Approved"}, headers=HQ).status_code == 200
+    assert c.patch(url, json={"status": "In Progress"}, headers=HQ).status_code == 200
     assert len(no_email) == 2  # submit confirmation + status email
     for _ in range(3):
-        assert c.patch(url, json={"status": "Approved"}, headers=HQ).json()["changed"] is False
+        assert c.patch(url, json={"status": "In Progress"}, headers=HQ).json()["changed"] is False
     assert len(no_email) == 2
 
 
@@ -90,7 +90,7 @@ def test_availability_is_stock_minus_open_requests(sheet_client):
 
     def approve(r):
         url = f"/requests/{r.json()['request_id']}/status"
-        assert c.patch(url, json={"status": "Approved"}, headers=HQ).status_code == 200
+        assert c.patch(url, json={"status": "In Progress"}, headers=HQ).status_code == 200
 
     assert st("Bandage") == "Available"
     r, _ = _post(c, items=[{"item_name": "Bandage", "quantity": 49}])
@@ -155,7 +155,7 @@ def test_invalid_transition_maps_to_409(db_client, monkeypatch):
     def refuse(*a, **k):
         raise psycopg.errors.RaiseException("cannot change request R from Shipped to Approved (internal detail)")
     monkeypatch.setattr(main.db, "set_request_status", refuse)
-    res = db_client.patch(f"/requests/{r.json()['request_id']}/status", json={"status": "Approved"}, headers=HQ)
+    res = db_client.patch(f"/requests/{r.json()['request_id']}/status", json={"status": "In Progress"}, headers=HQ)
     assert res.status_code == 409 and "internal" not in res.text
 
 
@@ -171,7 +171,7 @@ def test_db_errors_on_status_change_map_to_404_and_400(db_client, monkeypatch, e
     def fail(*a, **k):
         raise getattr(psycopg.errors, exc)("unknown status (internal detail)")
     monkeypatch.setattr(main.db, "set_request_status", fail)
-    res = db_client.patch(f"/requests/{r.json()['request_id']}/status", json={"status": "Approved"}, headers=HQ)
+    res = db_client.patch(f"/requests/{r.json()['request_id']}/status", json={"status": "In Progress"}, headers=HQ)
     assert res.status_code == status and "internal" not in res.text
 
 

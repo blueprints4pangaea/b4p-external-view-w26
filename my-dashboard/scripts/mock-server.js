@@ -52,12 +52,12 @@ http.createServer((req, res) => {
     const mk = (id, status, ts, items) => items.map(([n, q]) => ({ 'Request ID': id, Status: status, Timestamp: ts, 'Item Name': n, 'Quantity Requested': String(q) }));
     return json(res, [
       ...mk('R-1003', 'Pending', '2026-10-09T14:20:00Z', [['Syringe 5 mL', 40], ['Needle 21G', 100]]),
-      ...mk('R-1002', 'Approved', '2026-10-02T09:05:00Z', [['Nitrile gloves (M)', 200]]),
-      ...mk('R-1001', 'Delivered', '2026-09-20T16:40:00Z', [['Gauze pads 4x4', 60], ['Medical tape 1 in', 12], ['Elastic bandage 4 in', 10]]),
-      ...mk('R-1000', 'Denied', '2026-09-01T11:00:00Z', [['Pulse oximeter', 5]]),
+      ...mk('R-1002', 'In Progress', '2026-10-02T09:05:00Z', [['Nitrile gloves (M)', 200]]),
+      ...mk('R-1001', 'Fulfilled', '2026-09-20T16:40:00Z', [['Gauze pads 4x4', 60], ['Medical tape 1 in', 12], ['Elastic bandage 4 in', 10]]),
+      ...mk('R-1000', 'Requested', '2026-09-01T11:00:00Z', [['Pulse oximeter', 5]]),
     ]);
   }
-  if (p === '/requests') return json(res, { request_id: 'REQ-20261011-4F2A', status: 'Under Review' });
+  if (p === '/requests') return json(res, { request_id: 'REQ-20261011-4F2A', status: 'Requested' });
   return json(res, { detail: 'Not found' }, 404);
 }).listen(API, '127.0.0.1');
 

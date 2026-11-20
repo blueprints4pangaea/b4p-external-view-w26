@@ -90,7 +90,7 @@ def test_rows_match_the_existing_requests_tab_exactly(app):
     assert first["Request ID"] == rid and rid.startswith("REQ-")
     assert (first["Org Name"], first["Org Email"]) == ("Riverside Clinic", "ana@riverside.org")
     assert (first["Category"], first["Quantity Requested"]) == ("PH/PPE", 4)
-    assert {row["Status"] for row in rows} == {"Under Review"}
+    assert {row["Status"] for row in rows} == {"Requested"}
     assert (first["Review Flag"], second["Review Flag"]) == ("FALSE", "TRUE")
     assert first["Timestamp"].endswith("+00:00") and "T" in first["Timestamp"]  # ISO, like the May rows
     # The same rows the in-memory copy keeps.
@@ -245,7 +245,7 @@ def test_an_error_answer_is_not_retried(app):
 def test_many_sends_of_one_id_post_it_once(app):
     import threading
     client, posts, state = app
-    rows = [["REQ-1-abc", "o", "e", "Gauze", "", 1, "Under Review", "t", "FALSE"]] * 100  # 100 lines
+    rows = [["REQ-1-abc", "o", "e", "Gauze", "", 1, "Requested", "t", "FALSE"]] * 100  # 100 lines
     results = []
     threads = [threading.Thread(target=lambda: results.append(
         request_webhook.send(main.ORG_REQ_HEADERS, rows, "REQ-1-abc"))) for _ in range(20)]
@@ -295,8 +295,8 @@ def test_the_suite_has_no_webhook_from_env():
 
 def test_lines_in_the_request_sheet_lower_availability(app):
     client, posts, state = app
-    state["lines"] = [["REQ-9-x", "Nitrile gloves (M) [Lot L1, Box 4, Pallet 1]", 30, "Under Review"],
-                      ["REQ-9-y", "Nitrile gloves (M)", 5, "Approved"]]
+    state["lines"] = [["REQ-9-x", "Nitrile gloves (M) [Lot L1, Box 4, Pallet 1]", 30, "Requested"],
+                      ["REQ-9-y", "Nitrile gloves (M)", 5, "In Progress"]]
     rows = {a["item_name"]: a for a in client.get("/inventory/availability").json()}
     assert rows["Nitrile gloves (M)"]["remaining"] == 40 - 35
     assert state["reads"] and state["reads"][0]["action"] == "totals" and state["reads"][0]["secret"] == "s3cret"
@@ -316,7 +316,7 @@ def test_the_read_back_is_cached_for_a_minute(app, monkeypatch):
 def test_a_request_sent_here_is_not_counted_twice_once_it_is_in_the_sheet(app):
     client, posts, state = app
     rid = submit(client).json()["request_id"]
-    state["lines"] = [[rid, "Nitrile gloves (M)", 4, "Under Review"]]
+    state["lines"] = [[rid, "Nitrile gloves (M)", 4, "Requested"]]
     request_webhook._lines_cache.clear()
     rows = {a["item_name"]: a for a in client.get("/inventory/availability").json()}
     assert rows["Nitrile gloves (M)"]["remaining"] == 40 - 4

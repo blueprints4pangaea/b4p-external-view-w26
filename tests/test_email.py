@@ -331,7 +331,7 @@ def test_suffixed_approved_request_holds_stock_like_a_plain_one(sheet_client, no
             "org_name": "O", "org_email": f"o{n}@example.org",
             "items": [{"item_name": "Gauze" + suffix, "quantity": qty}]}).json()["request_id"]
         assert _status_of(sheet_client, "Gauze") == expected  # Under Review already holds it
-        r = sheet_client.patch(f"/requests/{rid}/status", json={"status": "Approved"},
+        r = sheet_client.patch(f"/requests/{rid}/status", json={"status": "In Progress"},
                                headers={"X-HQ-Token": "test-hq-token"})
         assert r.status_code == 200
         assert _status_of(sheet_client, "Gauze") == expected
@@ -386,7 +386,7 @@ def test_status_change_clears_this_instances_inventory_cache(sheet_client, no_em
     import main
     rid = _submit(sheet_client).json()["request_id"]
     main._inventory_cache.update(records=[{"Name": "stale"}], at=main.time.monotonic())
-    r = sheet_client.patch(f"/requests/{rid}/status", json={"status": "Approved"},
+    r = sheet_client.patch(f"/requests/{rid}/status", json={"status": "In Progress"},
                            headers={"X-HQ-Token": "test-hq-token"})
     assert r.status_code == 200 and main._inventory_cache == {}
 

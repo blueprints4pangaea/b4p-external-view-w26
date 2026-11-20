@@ -206,7 +206,7 @@ def test_submit_response_shape(client):
     r = _post(client)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert REQ_ID.match(body["request_id"]) and body["status"] == "Under Review"
+    assert REQ_ID.match(body["request_id"]) and body["status"] == "Requested"
 
 
 def test_list_by_email_row_shape(client):
@@ -216,7 +216,7 @@ def test_list_by_email_row_shape(client):
     assert len(rows) == 1
     assert set(rows[0]) >= {"Request ID", "Org Name", "Org Email", "Item Name", "Category",
                             "Quantity Requested", "Status", "Timestamp", "Review Flag"}
-    assert rows[0]["Request ID"] == rid and rows[0]["Status"] == "Under Review"
+    assert rows[0]["Request ID"] == rid and rows[0]["Status"] == "Requested"
     assert rows[0]["Quantity Requested"] == "1"  # string in both modes
 
 
@@ -321,28 +321,28 @@ def test_rate_limit_counts_invalid_posts_too(client):
 def test_patch_requires_token(client, monkeypatch):
     rid = _post(client).json()["request_id"]
     url = f"/requests/{rid}/status"
-    assert client.patch(url, json={"status": "Approved"}).status_code == 401
-    assert client.patch(url, json={"status": "Approved"}, headers={"X-HQ-Token": "nope"}).status_code == 401
+    assert client.patch(url, json={"status": "In Progress"}).status_code == 401
+    assert client.patch(url, json={"status": "In Progress"}, headers={"X-HQ-Token": "nope"}).status_code == 401
     monkeypatch.delenv("HQ_API_TOKEN")
-    assert client.patch(url, json={"status": "Approved"}, headers=HQ).status_code == 403
+    assert client.patch(url, json={"status": "In Progress"}, headers=HQ).status_code == 403
 
 
-@pytest.mark.parametrize("status", ["Under Review", "approved", "DENIED", "", None, "Bogus", "Pending"])
+@pytest.mark.parametrize("status", ["Under Review", "approved", "Denied", "Cancelled", "", None, "Bogus"])
 def test_patch_rejects_unknown_status(client, status):
     rid = _post(client).json()["request_id"]
     assert client.patch(f"/requests/{rid}/status", json={"status": status}, headers=HQ).status_code == 422
 
 
 def test_patch_unknown_request_is_404(client):
-    r = client.patch("/requests/REQ-0000000000-000/status", json={"status": "Approved"}, headers=HQ)
+    r = client.patch("/requests/REQ-0000000000-000/status", json={"status": "In Progress"}, headers=HQ)
     assert r.status_code == 404
 
 
-def test_patch_cannot_move_backwards(client):
+def test_a_fulfilled_request_can_go_back_to_in_progress(client):
     rid = _post(client).json()["request_id"]
-    assert client.patch(f"/requests/{rid}/status", json={"status": "Shipped"}, headers=HQ).status_code == 200
-    r = client.patch(f"/requests/{rid}/status", json={"status": "Approved"}, headers=HQ)
-    assert r.status_code == 409
+    assert client.patch(f"/requests/{rid}/status", json={"status": "Fulfilled"}, headers=HQ).status_code == 200
+    r = client.patch(f"/requests/{rid}/status", json={"status": "In Progress"}, headers=HQ)
+    assert r.status_code == 200 and r.json()["status"] == "In Progress"
 
 
 # --- CORS ------------------------------------------------------------------------
@@ -417,7 +417,7 @@ def live_sheet(monkeypatch):
     monkeypatch.setenv("GOOGLE_SHEET_ID", "fake-sheet")
     inv = FakeWorksheet([["Name", "Category", "Quantity", "Review"], ["Gauze", "C", "10", "No"]])
     req = FakeWorksheet([main.ORG_REQ_HEADERS,
-                         ["REQ-1-001", "O", "o@x.org", "Gauze", "C", "2", "Under Review", "t", "FALSE"]])
+                         ["REQ-1-001", "O", "o@x.org", "Gauze", "C", "2", "Requested", "t", "FALSE"]])
 
     class FakeClient:
         def open_by_key(self, key):
@@ -454,7 +454,7 @@ def test_sheet_write_quota_error_is_503_without_leak(live_sheet, no_email):
 def test_sheet_status_write_quota_error_is_503_without_leak(live_sheet, no_email):
     c, _, req = live_sheet
     req.fail = {"write"}
-    r = c.patch("/requests/REQ-1-001/status", json={"status": "Approved"}, headers=HQ)
+    r = c.patch("/requests/REQ-1-001/status", json={"status": "In Progress"}, headers=HQ)
     assert r.status_code == 503
     _no_leak(r)
     assert no_email == []
@@ -518,7 +518,7 @@ def db_down(monkeypatch):
     ("get", "/requests", {"headers": HQ}),
     ("post", "/requests", {"json": {"org_name": "O", "org_email": "a@b.co",
                                     "items": [{"item_name": "Gauze", "quantity": 1}]}}),
-    ("patch", "/requests/REQ-1-001/status", {"json": {"status": "Approved"}, "headers": HQ}),
+    ("patch", "/requests/REQ-1-001/status", {"json": {"status": "In Progress"}, "headers": HQ}),
 ])
 def test_db_down_is_503_without_leak(db_down, no_email, method, url, kw):
     r = getattr(db_down, method)(url, **kw)

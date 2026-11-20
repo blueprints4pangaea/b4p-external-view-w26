@@ -6,10 +6,10 @@ const row = (id, org, email, status, item, qty, ts) => ({
   'Request ID': id, 'Org Name': org, 'Org Email': email, Status: status, 'Item Name': item, 'Quantity Requested': String(qty), Timestamp: ts,
 });
 const ROWS = [
-  row('REQ-1', 'Riverside Clinic', 'r@x.org', 'Under Review', 'Gauze pads', 4, '2026-10-20T10:00:00Z'),
-  row('REQ-1', 'Riverside Clinic', 'r@x.org', 'Under Review', 'Exam gloves', 2, '2026-10-20T10:00:00Z'),
-  row('REQ-2', 'Hillside Health', 'h@x.org', 'Approved', 'Syringes', 10, '2026-10-22T10:00:00Z'),
-  row('REQ-3', 'Riverside Clinic', 'r@x.org', 'Shipped', 'Masks', 5, '2026-10-24T10:00:00Z'),
+  row('REQ-1', 'Riverside Clinic', 'r@x.org', 'Requested', 'Gauze pads', 4, '2026-10-20T10:00:00Z'),
+  row('REQ-1', 'Riverside Clinic', 'r@x.org', 'Requested', 'Exam gloves', 2, '2026-10-20T10:00:00Z'),
+  row('REQ-2', 'Hillside Health', 'h@x.org', 'In Progress', 'Syringes', 10, '2026-10-22T10:00:00Z'),
+  row('REQ-3', 'Riverside Clinic', 'r@x.org', 'Fulfilled', 'Masks', 5, '2026-10-24T10:00:00Z'),
 ];
 
 afterEach(() => {
@@ -35,9 +35,9 @@ test('the per-clinic summary counts requests, units and the last request', () =>
 
 test('filters by status and by clinic', () => {
   const groups = withOrgs(ROWS);
-  expect(filterGroups(groups, { status: 'review' }).map((g) => g.id)).toEqual(['REQ-1']);
+  expect(filterGroups(groups, { status: 'requested' }).map((g) => g.id)).toEqual(['REQ-1']);
   expect(filterGroups(groups, { clinic: 'Riverside Clinic' }).map((g) => g.id)).toEqual(['REQ-3', 'REQ-1']);
-  expect(filterGroups(groups, { status: 'shipped', clinic: 'Hillside Health' })).toEqual([]);
+  expect(filterGroups(groups, { status: 'fulfilled', clinic: 'Hillside Health' })).toEqual([]);
 });
 
 const ACCOUNTS = [
@@ -70,8 +70,8 @@ test('the dashboard lists requests and changes a status through the server', asy
 
   userEvent.selectOptions(screen.getByLabelText('Clinic'), 'Riverside Clinic');
   expect(within(table).queryByText('Hillside Health')).not.toBeInTheDocument();
-  userEvent.click(screen.getByRole('button', { name: /^Under review/ }));
-  userEvent.click(within(table).getByRole('button', { name: 'Approve' }));
+  userEvent.click(screen.getByRole('button', { name: /^Requested/ }));
+  userEvent.click(within(table).getByRole('button', { name: 'Start' }));
   await waitFor(() => expect(calls.some(([url, method]) => method === 'PATCH' && url.endsWith('/requests/REQ-1/status'))).toBe(true));
 });
 
