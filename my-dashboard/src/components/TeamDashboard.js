@@ -8,28 +8,22 @@ import { EmptyState, ErrorState } from './States';
 // clinic accounts with a password reset link for anyone locked out. Status rules and the per-clinic
 // grouping come from the HQ review page in team PR #9; every change is still checked by the server.
 
-// Mirrors _check_transition in main.py: forward only; Deny/Cancel only before shipping.
+// Mirrors main.py: Requested -> In Progress -> Fulfilled, and Fulfilled can go back to In Progress.
+// Supplies are removed from a request on the Hub dashboard.
 export const ACTIONS = {
-  'Under Review': [
-    { status: 'Approved', label: 'Approve', kind: 'primary' },
-    { status: 'Denied', label: 'Deny', kind: 'secondary', confirm: true },
-  ],
-  Approved: [
-    { status: 'Shipped', label: 'Mark shipped', kind: 'primary' },
-    { status: 'Cancelled', label: 'Cancel', kind: 'secondary', confirm: true },
-  ],
-  Shipped: [{ status: 'Delivered', label: 'Mark delivered', kind: 'secondary' }],
+  Requested: [{ status: 'In Progress', label: 'Start', kind: 'primary' }],
+  'In Progress': [{ status: 'Fulfilled', label: 'Mark fulfilled', kind: 'primary' }],
+  Fulfilled: [{ status: 'In Progress', label: 'Back to in progress', kind: 'secondary', confirm: true }],
 };
 
 export const STATUSES = [
   { id: 'all', label: 'All', match: () => true },
-  { id: 'review', label: 'Under review', match: (s) => s === 'Under Review' },
-  { id: 'approved', label: 'Approved', match: (s) => s === 'Approved' },
-  { id: 'shipped', label: 'Shipped', match: (s) => s === 'Shipped' || s === 'Delivered' },
-  { id: 'denied', label: 'Denied or cancelled', match: (s) => s === 'Denied' || s === 'Cancelled' },
+  { id: 'requested', label: 'Requested', match: (s) => s === 'Requested' },
+  { id: 'in-progress', label: 'In progress', match: (s) => s === 'In Progress' },
+  { id: 'fulfilled', label: 'Fulfilled', match: (s) => s === 'Fulfilled' },
 ];
 
-const STATUS_LABEL = { 'Under Review': 'Under review' };
+const STATUS_LABEL = { 'In Progress': 'In progress' };
 
 // groupRequests() is built for one clinic, so it drops who sent each request; add it back.
 export function withOrgs(rows) {

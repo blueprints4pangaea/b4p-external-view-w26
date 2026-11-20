@@ -35,6 +35,7 @@ from app import db
 from app import accounts, auth
 from app import email_check
 from app import request_webhook
+from app import requested_supplies
 from app.services import email as email_svc
 
 # .env is for local development only; hosted platforms provide real environment variables.
@@ -1198,23 +1199,39 @@ class OrgRequestBody(BaseModel):
 
 
 class StatusUpdateBody(BaseModel):
-    status: Literal["Approved", "Shipped", "Delivered", "Denied", "Cancelled"]
+    status: Literal["Requested", "In Progress", "Fulfilled"]
 
 
-# Same rules the database enforces in set_request_status(): a request only moves forward, and can be
-# Denied or Cancelled only while it is Under Review or Approved.
-STATUS_ORDER = ["Under Review", "Approved", "Shipped", "Delivered"]
+# Statuses (aak, 20 Nov 2026): Requested (the clinic asked; its supplies are already off inventory),
+# In Progress (HQ is putting the shipment together), Fulfilled (done). Fulfilled can go back to In
+# Progress. Rows written before this keep their old words, read through OLD_STATUSES.
+STATUSES = ("Requested", "In Progress", "Fulfilled")
+NEW_REQUEST_STATUS = "Requested"
+OLD_STATUSES = {"under review": "Requested", "approved": "In Progress", "shipped": "Fulfilled",
+                "delivered": "Fulfilled", "denied": "Denied", "cancelled": "Cancelled", "canceled": "Cancelled"}
+# The database (not used by the live site) still has its own words and forward-only rule.
+DB_STATUS = {"Requested": "Under Review", "In Progress": "Approved", "Fulfilled": "Shipped"}
+
+
+def canonical_status(value) -> str:
+    """A Status cell in today's words: blank is Requested, old words are mapped."""
+    text = str(value or "").strip()
+    if not text:
+        return NEW_REQUEST_STATUS
+    for s in STATUSES:
+        if text.casefold() == s.casefold():
+            return s
+    return OLD_STATUSES.get(text.casefold(), text)
+
+
+def _canonical_rows(rows: list[dict]) -> list[dict]:
+    return [{**r, "Status": canonical_status(r.get("Status"))} for r in rows]
 
 
 def _check_transition(current: set[str], new: str) -> None:
-    """409 unless every line can move to `new` (lines already at `new` are fine)."""
-    for old in current - {new}:
-        if new in ("Denied", "Cancelled"):
-            allowed = old in ("Under Review", "Approved")
-        else:
-            allowed = old in STATUS_ORDER and STATUS_ORDER.index(old) < STATUS_ORDER.index(new)
-        if not allowed:
-            raise HTTPException(status_code=409, detail="That status change is not allowed.")
+    """409 unless every line is Requested, In Progress or Fulfilled (old Denied / Cancelled lines are final)."""
+    if any(canonical_status(old) not in STATUSES for old in current):
+        raise HTTPException(status_code=409, detail="That status change is not allowed.")
 
 
 _FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
@@ -1417,7 +1434,7 @@ def _org_request_rows(request_id: str, body: "OrgRequestBody", flags: list[bool]
     """A request as rows of the Requests tab (ORG_REQ_HEADERS), one per supply."""
     return [
         [_sheet_safe(c) for c in [request_id, body.org_name, body.org_email, item.item_name,
-                                  item.category, item.quantity, "Under Review", ts, "TRUE" if flag else "FALSE"]]
+                                  item.category, item.quantity, NEW_REQUEST_STATUS, ts, "TRUE" if flag else "FALSE"]]
         for item, flag in zip(body.items, flags)
     ]
 
@@ -1439,6 +1456,64 @@ def _sign_in_required() -> bool:
     return accounts._deployed() and db.enabled()
 
 
+def _name_key(text: str) -> str:
+    return re.sub(r"[^0-9a-z]+", "", _norm_name(text))
+
+
+def _find_inventory_row(values: list, item_name: str, sheet_row: Optional[int], left: dict) -> Optional[int]:
+    """The inventory row (index into values) a request line was picked from.
+
+    The line ends with the row's "[Lot X, Box Y, Pallet Z]", which must match. The row the clinic
+    picked (sheet_row) is used when it still holds that item; rows shift when others are deleted,
+    so otherwise the first row with the same name, lot, box and pallet and units left is used.
+    Names are compared as the site shows them: patient IDs removed, with or without "(Maker)".
+    """
+    parts = _lot_parts(item_name)
+    if not values or parts is None:
+        return None
+    header = _clean_header(values[0])
+    col = {name: j for j, name in enumerate(header)}
+    base = _name_key(_base_item_name(item_name))
+
+    def cell(row, name):
+        j = col.get(name)
+        return row[j] if j is not None and j < len(row) else ""
+
+    def matches(row) -> bool:
+        have = tuple(_norm_name(str(cell(row, c)).strip()) for c in ("Lot Number", "Box Number", "Pallet Number"))
+        if any(want != got for want, got in zip(parts, have)):
+            return False
+        shown = _redact_row({"Name": cell(row, "Name"), "General": cell(row, "General"),
+                             "Maker": cell(row, "Manufacturer Name")})
+        names = {_name_key(shown["Name"]), _name_key(shown["General"])} - {""}
+        maker = _name_key(shown["Maker"])
+        return (not _name_key(shown["Name"])  # unnamed rows are shown under a made-up name
+                or base in names or (bool(maker) and any(base == n + maker for n in names)))
+
+    def has_left(i):
+        q = left.get(i, requested_supplies.to_int(cell(values[i], "Quantity")))
+        return q is not None and q > 0
+
+    if sheet_row and 2 <= sheet_row <= len(values) and matches(values[sheet_row - 1]) and has_left(sheet_row - 1):
+        return sheet_row - 1
+    return next((i for i in range(1, len(values)) if matches(values[i]) and has_left(i)), None)
+
+
+def _pull_requested_supplies(spreadsheet, request_id: str, body: "OrgRequestBody") -> None:
+    """Take a saved request's units off the inventory tab, when the requests tab lives in the
+    inventory spreadsheet (the live site). Never raises: the lines then keep holding their units
+    through _remaining_by_row, as before."""
+    if getattr(spreadsheet, "id", None) != _inventory_sheet_id():
+        return
+    try:
+        lines = [(i.item_name, i.quantity, i.sheet_row) for i in body.items]
+        requested_supplies.pull(spreadsheet, INVENTORY_TAB, request_id, lines, _find_inventory_row)
+    except Exception:
+        logger.exception("Couldn't take request %s off the inventory tab", request_id)
+    finally:
+        _inventory_cache.clear()
+
+
 @app.post("/requests")
 def submit_org_request(body: OrgRequestBody, tasks: BackgroundTasks, request: Request,
                        _rl: None = Depends(rate_limit_post)):
@@ -1454,7 +1529,7 @@ def submit_org_request(body: OrgRequestBody, tasks: BackgroundTasks, request: Re
             if body.client_request_id and db.request_exists(request_id):  # already saved: a retry, or a clash
                 if not _same_request(db.request_lines(request_id), body):
                     raise _client_id_conflict()
-                return {"request_id": request_id, "status": "Under Review"}  # a true retry: no second email
+                return {"request_id": request_id, "status": NEW_REQUEST_STATUS}  # a true retry: no second email
             _check_enough_left(body)
             flags = _review_flags(body)
             try:  # the inventory item each line was picked from; a lookup failure never blocks the request
@@ -1470,7 +1545,7 @@ def submit_org_request(body: OrgRequestBody, tasks: BackgroundTasks, request: Re
         _copy_to_request_sheet(request_id, body, flags, datetime.now(timezone.utc).isoformat())
         _queue_submit_emails(tasks, body, request_id,
                              [i.item_name for i, flag in zip(body.items, flags) if flag], client_ip)
-        return {"request_id": request_id, "status": "Under Review"}
+        return {"request_id": request_id, "status": NEW_REQUEST_STATUS}
 
     flags = _review_flags(body)
     flagged = [i.item_name for i, f in zip(body.items, flags) if f]
@@ -1482,7 +1557,7 @@ def submit_org_request(body: OrgRequestBody, tasks: BackgroundTasks, request: Re
             if body.client_request_id and existing:
                 if not _same_request(existing, body):
                     raise _client_id_conflict()
-                return {"request_id": request_id, "status": "Under Review", "message": "Kept in memory only."}
+                return {"request_id": request_id, "status": NEW_REQUEST_STATUS, "message": "Kept in memory only."}
             _check_enough_left(body)
             ts = datetime.now(timezone.utc).isoformat()
             for item, flag in zip(body.items, flags):
@@ -1490,11 +1565,11 @@ def submit_org_request(body: OrgRequestBody, tasks: BackgroundTasks, request: Re
                     "Request ID": request_id, "Org Name": body.org_name,
                     "Org Email": body.org_email, "Item Name": item.item_name,
                     "Category": item.category, "Quantity Requested": str(item.quantity),
-                    "Status": "Under Review", "Timestamp": ts, "Review Flag": "TRUE" if flag else "FALSE",
+                    "Status": NEW_REQUEST_STATUS, "Timestamp": ts, "Review Flag": "TRUE" if flag else "FALSE",
                 })
         _copy_to_request_sheet(request_id, body, flags, ts)
         _queue_submit_emails(tasks, body, request_id, flagged, client_ip)
-        return {"request_id": request_id, "status": "Under Review", "message": "Kept in memory only."}
+        return {"request_id": request_id, "status": NEW_REQUEST_STATUS, "message": "Kept in memory only."}
 
     request_id = _request_id_for(body.client_request_id)
     ts = datetime.now(timezone.utc).isoformat()
@@ -1511,16 +1586,17 @@ def submit_org_request(body: OrgRequestBody, tasks: BackgroundTasks, request: Re
             if existing:  # already saved: a retry, or a clash
                 if not _same_request(existing, body):
                     raise _client_id_conflict()
-                return {"request_id": request_id, "status": "Under Review"}
+                return {"request_id": request_id, "status": NEW_REQUEST_STATUS}
         _check_enough_left(body)
         # One writer per request, never both: the request sheet's web app when it's set up, else (or
         # when the web app certainly didn't save it) the service account. "unknown" (e.g. a timeout
         # after sending) may already be saved, so it isn't written again; /health shows the error.
         if _copy_to_request_sheet(request_id, body, flags, ts) == "failed":
             ws.append_rows(batch, value_input_option="RAW")
+            _pull_requested_supplies(spreadsheet, request_id, body)
 
     _queue_submit_emails(tasks, body, request_id, flagged, client_ip)
-    return {"request_id": request_id, "status": "Under Review"}
+    return {"request_id": request_id, "status": NEW_REQUEST_STATUS}
 
 
 @app.patch("/requests/{request_id}/status", dependencies=[Depends(require_hq)])
@@ -1529,10 +1605,10 @@ async def update_org_request_status(request_id: str, body: StatusUpdateBody, tas
         rows = [r for r in db.get_requests() if r["Request ID"].strip() == request_id]
         if not rows:
             raise HTTPException(status_code=404, detail=f"Request ID '{request_id}' not found.")
-        if all(r["Status"].strip() == body.status for r in rows):
+        if all(canonical_status(r["Status"]) == body.status for r in rows):
             return {"request_id": request_id, "status": body.status, "changed": False}
         try:
-            found = db.set_request_status(request_id, body.status)
+            found = db.set_request_status(request_id, DB_STATUS[body.status])
         except psycopg.errors.NoDataFound:  # SQLSTATE P0002: unknown id
             raise HTTPException(status_code=404, detail=f"Request ID '{request_id}' not found.")
         except psycopg.errors.RaiseException as exc:
@@ -1558,7 +1634,7 @@ async def update_org_request_status(request_id: str, body: StatusUpdateBody, tas
         rows = [r for r in _sample_org_request_rows if r.get("Request ID", "").strip() == request_id]
         if not rows:
             raise HTTPException(status_code=404, detail=f"Request ID '{request_id}' not found.")
-        current = {r["Status"].strip() for r in rows}
+        current = {canonical_status(r["Status"]) for r in rows}
         if current == {body.status}:
             return {"request_id": request_id, "status": body.status, "changed": False}
         _check_transition(current, body.status)
@@ -1600,7 +1676,7 @@ async def update_org_request_status(request_id: str, body: StatusUpdateBody, tas
     for i, row in enumerate(all_rows[1:], start=2):
         if len(row) > id_col and row[id_col].strip() == request_id:
             matching_sheet_rows.append(i)
-            current_statuses.add(row[status_col].strip() if len(row) > status_col else "")
+            current_statuses.add(canonical_status(row[status_col] if len(row) > status_col else ""))
             if not org_name and len(row) > org_name_col:
                 org_name = _sheet_unsafe(row[org_name_col])
             if not org_email and len(row) > org_email_col:
@@ -1631,11 +1707,11 @@ async def update_org_request_status(request_id: str, body: StatusUpdateBody, tas
     return {"request_id": request_id, "status": body.status}
 
 
-# Units a request holds until the team acts on it: shown availability is the sheet quantity minus
-# every Under Review and Approved line. Denied and Cancelled give the units back. Shipped and
-# Delivered are counted by the warehouse taking them off the sheet's quantity, so they don't hold
-# anything here (holding them too would count those units twice).
-HOLDING_STATUSES = ("Under Review", "Approved")
+# Live sheet: a request's units come off the inventory tab when it is saved (app/requested_supplies.py),
+# so those lines hold nothing more here. Lines that weren't taken off (older requests, sample and
+# database modes) hold their units while Requested or In Progress: shown availability is the sheet
+# quantity minus those lines. Fulfilled lines hold nothing (their units are gone from the sheet).
+HOLDING_STATUSES = ("Requested", "In Progress")
 _HOLDING = {s.casefold() for s in HOLDING_STATUSES}  # the team edits the sheet by hand
 _claim_lock = threading.Lock()  # one submit at a time between "how many are left" and saving it
 
@@ -1664,6 +1740,11 @@ def _request_rows_for_holds() -> list[dict]:
                 for r in all_rows[1:]:
                     if any(cell.strip() for cell in r):
                         org_requests.append(_row_dict(header, r))
+            # Lines already taken off the inventory tab hold nothing more here (that would count
+            # them twice). Older lines, from before supplies were taken at request time, still do.
+            pulled = requested_supplies.pulled_keys(spreadsheet)
+            org_requests = [r for r in org_requests
+                            if (r.get("Request ID", "").strip(), r.get("Item Name", "").strip()) not in pulled]
         except Exception:
             pass
     return org_requests
@@ -1683,7 +1764,7 @@ def _remaining_by_row(inventory: list[dict], org_requests: list[dict]) -> tuple[
     held_by_name: dict[str, int] = {}
     held_exact: dict[tuple, int] = {}  # (name, (lot, box, pallet)) -> qty, for lines naming their lot
     for r in org_requests:
-        status = (r.get("Status") or "").strip() or "Under Review"
+        status = canonical_status(r.get("Status"))
         if status.casefold() not in _HOLDING:
             continue
         full = r.get("Item Name", "")
@@ -1844,10 +1925,10 @@ def list_org_requests(request: Request, response: Response, email: Optional[str]
                 and _sent_since(r.get("Timestamp"), since)]
 
     if db.enabled():
-        return mine(db.get_requests())
+        return _canonical_rows(mine(db.get_requests()))
 
     if _requests_in_memory():
-        return mine(list(_sample_org_request_rows))
+        return _canonical_rows(mine(list(_sample_org_request_rows)))
 
     spreadsheet = _open_requests_spreadsheet()
     ws = _org_requests_worksheet(spreadsheet)
@@ -1857,8 +1938,8 @@ def list_org_requests(request: Request, response: Response, email: Optional[str]
         return []
 
     header = all_rows[0]
-    return mine([
+    return _canonical_rows(mine([
         _row_dict(header, r)
         for r in all_rows[1:]
         if any(cell.strip() for cell in r)
-    ])
+    ]))

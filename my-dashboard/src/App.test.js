@@ -41,7 +41,7 @@ function installFetch() {
   handlers = {
     supplies: () => response(200, SUPPLIES),
     availability: () => response(200, []),
-    submit: () => response(200, { request_id: RID, status: 'Under Review' }),
+    submit: () => response(200, { request_id: RID, status: 'Requested' }),
     mine: () => response(200, []),
   };
   global.fetch = jest.fn((url, init = {}) => {
@@ -348,7 +348,7 @@ describe('review and confirmation', () => {
     handlers.submit = () => Promise.reject(new TypeError('Failed to fetch'));
     userEvent.click(screen.getByRole('button', { name: 'Send request' }));
     await screen.findByRole('alert');
-    handlers.submit = () => response(200, { request_id: RID, status: 'Under Review' });
+    handlers.submit = () => response(200, { request_id: RID, status: 'Requested' });
     userEvent.click(screen.getByRole('button', { name: 'Send request' }));
     await screen.findByRole('heading', { name: 'Request submitted' });
     expect(posts).toHaveLength(2);
@@ -400,7 +400,7 @@ describe('review and confirmation', () => {
     fireEvent.submit(send.closest('form'));
     fireEvent.submit(send.closest('form'));
     expect(posts).toHaveLength(1);
-    await act(async () => release(await response(200, { request_id: RID, status: 'Under Review' })));
+    await act(async () => release(await response(200, { request_id: RID, status: 'Requested' })));
     await screen.findByRole('heading', { name: 'Request submitted' });
   });
 

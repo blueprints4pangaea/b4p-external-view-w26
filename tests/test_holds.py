@@ -27,14 +27,16 @@ def test_a_request_lowers_what_others_see_and_a_denial_gives_it_back(sheet_clien
     assert _row(c, "Bandage")["remaining"] == 50
     rid = _ask(c, "Bandage", 20).json()["request_id"]
     assert _row(c, "Bandage")["remaining"] == 30
-    assert c.patch(f"/requests/{rid}/status", json={"status": "Approved"}, headers=HQ).status_code == 200
+    assert c.patch(f"/requests/{rid}/status", json={"status": "In Progress"}, headers=HQ).status_code == 200
     assert _row(c, "Bandage")["remaining"] == 30  # still held
     rid2 = _ask(c, "Bandage", 5, email="b@example.org").json()["request_id"]
     assert _row(c, "Bandage")["remaining"] == 25
-    assert c.patch(f"/requests/{rid2}/status", json={"status": "Cancelled"}, headers=HQ).status_code == 200
+    assert c.patch(f"/requests/{rid2}/status", json={"status": "Fulfilled"}, headers=HQ).status_code == 200
     assert _row(c, "Bandage")["remaining"] == 30
-    assert c.patch(f"/requests/{rid}/status", json={"status": "Shipped"}, headers=HQ).status_code == 200
-    assert _row(c, "Bandage")["remaining"] == 50  # the warehouse takes shipped units off the sheet itself
+    assert c.patch(f"/requests/{rid}/status", json={"status": "Fulfilled"}, headers=HQ).status_code == 200
+    assert _row(c, "Bandage")["remaining"] == 50  # sample data: fulfilled lines stop holding (the live sheet takes them off)
+    assert c.patch(f"/requests/{rid}/status", json={"status": "In Progress"}, headers=HQ).status_code == 200
+    assert _row(c, "Bandage")["remaining"] == 30  # back to In Progress: held again
 
 
 def test_asking_for_more_than_is_left_says_how_many(sheet_client):
@@ -87,7 +89,7 @@ def test_a_retry_of_a_saved_request_is_not_refused_by_its_own_hold(sheet_client)
 
 def test_statuses_typed_in_the_sheet_count_whatever_their_case(sheet_client):
     c = sheet_client
-    for status, held in (("approved", 4), ("UNDER REVIEW", 4), ("", 4), ("denied", 0), ("Shipped", 0)):
+    for status, held in (("approved", 4), ("UNDER REVIEW", 4), ("", 4), ("denied", 0), ("Fulfilled", 0)):
         main._sample_org_request_rows.clear()
         main._sample_org_request_rows.append({"Request ID": "REQ-1-a", "Item Name": "Bandage",
                                               "Quantity Requested": "4", "Status": status})

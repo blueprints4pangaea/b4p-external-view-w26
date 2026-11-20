@@ -291,9 +291,9 @@ describe('search, filters, sort', () => {
 
 describe('my requests', () => {
   const rows = [
-    { 'Request ID': 'REQ-1', 'Item Name': 'Gauze', 'Quantity Requested': '2', Status: 'Shipped', Timestamp: '2026-09-01T10:00:00+00:00' },
-    { 'Request ID': 'REQ-2', 'Item Name': 'Gloves', 'Quantity Requested': '5', Status: 'Under Review', Timestamp: '2026-10-01T10:00:00+00:00' },
-    { 'Request ID': 'REQ-2', 'Item Name': '', 'Quantity Requested': '1', Status: 'Under Review', Timestamp: '2026-10-01T10:00:00+00:00' },
+    { 'Request ID': 'REQ-1', 'Item Name': 'Gauze', 'Quantity Requested': '2', Status: 'Fulfilled', Timestamp: '2026-09-01T10:00:00+00:00' },
+    { 'Request ID': 'REQ-2', 'Item Name': 'Gloves', 'Quantity Requested': '5', Status: 'Requested', Timestamp: '2026-10-01T10:00:00+00:00' },
+    { 'Request ID': 'REQ-2', 'Item Name': '', 'Quantity Requested': '1', Status: 'Requested', Timestamp: '2026-10-01T10:00:00+00:00' },
     { 'Request ID': '', 'Item Name': 'orphan' },
   ];
 
@@ -305,9 +305,9 @@ describe('my requests', () => {
   });
 
   test('status steps', () => {
-    expect(statusStep('Under Review')).toBe(1);
-    expect(statusStep(' approved ')).toBe(2);
-    expect(statusStep('Shipped')).toBe(3);
+    expect(statusStep('Requested')).toBe(1);
+    expect(statusStep(' in progress ')).toBe(2);
+    expect(statusStep('Fulfilled')).toBe(3);
     expect(statusStep('')).toBe(0);
     expect(statusStep('Delivered')).toBe(0);
   });
@@ -362,10 +362,9 @@ describe('applyAvailability', () => {
 
 describe('statusInfo', () => {
   test.each([
-    ['Under Review', { step: 1, label: 'Under review', stopped: false }],
-    ['Approved', { step: 2, label: 'Approved', stopped: false }],
-    ['Shipped', { step: 3, label: 'Shipped', stopped: false }],
-    ['Delivered', { step: 4, label: 'Delivered', stopped: false }],
+    ['Requested', { step: 1, label: 'Requested', stopped: false }],
+    ['In Progress', { step: 2, label: 'In progress', stopped: false }],
+    ['Fulfilled', { step: 3, label: 'Fulfilled', stopped: false }],
     [' denied ', { step: -1, label: 'Denied', stopped: true }],
     ['Cancelled', { step: -1, label: 'Cancelled', stopped: true }],
     ['canceled', { step: -1, label: 'Cancelled', stopped: true }],
@@ -659,9 +658,9 @@ describe('request names sent to HQ', () => {
 describe('my requests: lot lines merge back into supplies', () => {
   test('1 + 24 of the same product is one line of 25 with 2 lots', () => {
     const [g] = groupRequests([
-      { 'Request ID': 'REQ-1', 'Item Name': 'Saline [Lot A, Box 1, Pallet 1]', 'Quantity Requested': '1', Status: 'Under Review', Timestamp: 't' },
-      { 'Request ID': 'REQ-1', 'Item Name': 'Saline [Lot B, Box 2, Pallet 1]', 'Quantity Requested': '24', Status: 'Under Review', Timestamp: 't' },
-      { 'Request ID': 'REQ-1', 'Item Name': 'Gloves [Lot C, Box 1, Pallet 1]', 'Quantity Requested': '3', Status: 'Under Review', Timestamp: 't' },
+      { 'Request ID': 'REQ-1', 'Item Name': 'Saline [Lot A, Box 1, Pallet 1]', 'Quantity Requested': '1', Status: 'Requested', Timestamp: 't' },
+      { 'Request ID': 'REQ-1', 'Item Name': 'Saline [Lot B, Box 2, Pallet 1]', 'Quantity Requested': '24', Status: 'Requested', Timestamp: 't' },
+      { 'Request ID': 'REQ-1', 'Item Name': 'Gloves [Lot C, Box 1, Pallet 1]', 'Quantity Requested': '3', Status: 'Requested', Timestamp: 't' },
     ]);
     expect(g.lines).toEqual([{ name: 'Saline', quantity: 25 }, { name: 'Gloves', quantity: 3 }]);
     expect(g.lotCount).toBe(3);

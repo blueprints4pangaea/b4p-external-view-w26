@@ -339,13 +339,14 @@ export function filterAndSort(items, filters) {
 }
 
 // GET /requests returns one row per line; group into requests, newest first.
-export const STATUS_STEPS = ['Submitted', 'Under review', 'Approved', 'Shipped'];
+// The server sends Requested, In Progress or Fulfilled (older rows may say Denied or Cancelled).
+export const STATUS_STEPS = ['Submitted', 'Requested', 'In progress', 'Fulfilled'];
 
 export function statusStep(status) {
   const s = str(status).toLowerCase();
-  if (s === 'shipped') return 3;
-  if (s === 'approved') return 2;
-  if (s === 'under review') return 1;
+  if (s === 'fulfilled') return 3;
+  if (s === 'in progress') return 2;
+  if (s === 'requested') return 1;
   return 0;
 }
 
@@ -356,7 +357,6 @@ export function statusInfo(status) {
   if (s === 'denied' || s === 'cancelled' || s === 'canceled') {
     return { step: -1, label: s === 'denied' ? 'Denied' : 'Cancelled', stopped: true };
   }
-  if (s === 'delivered') return { step: 4, label: 'Delivered', stopped: false };
   const step = statusStep(raw);
   return { step, label: STATUS_STEPS[step], stopped: false };
 }
