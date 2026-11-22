@@ -563,7 +563,7 @@ class _GrowingSheet(FakeWorksheet):
             self.rows[row - 1][col - 1] = u["values"][0][0]
 
 
-def test_sheet_request_rows_carry_box_pallet_and_item_id_columns(monkeypatch, no_email):
+def test_sheet_request_rows_carry_box_and_pallet(monkeypatch, no_email):
     import main
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("USE_SAMPLE_DATA", raising=False)
@@ -581,9 +581,8 @@ def test_sheet_request_rows_carry_box_pallet_and_item_id_columns(monkeypatch, no
              {"item_name": "Gauze [Lot —, Box —, Pallet 7]", "quantity": 1},
              {"item_name": "Gauze", "quantity": 1}]
     assert c.post("/requests", json={"org_name": "O", "org_email": "q@x.org", "items": items}).status_code == 200
-    assert req.rows[0] == list(main.ORG_REQ_HEADERS) + ["Box Number", "Pallet Number", "Item ID"]
-    # Not the inventory spreadsheet here, so nothing is taken off inventory and there's no Item ID.
-    assert [r[-3:] for r in req.rows[1:]] == [["4", "2", ""], ["", "7", ""], ["", "", ""]]
+    assert req.rows[0] == list(main.ORG_REQ_HEADERS) + ["Box Number", "Pallet Number"]
+    assert [r[-2:] for r in req.rows[1:]] == [["4", "2"], ["", "7"], ["", ""]]
     # A second request finds the columns already there and doesn't add them again.
     assert c.post("/requests", json={"org_name": "O", "org_email": "q@x.org", "items": items[:1]}).status_code == 200
-    assert req.rows[0].count("Box Number") == 1 and req.rows[-1][-3:] == ["4", "2", ""]
+    assert req.rows[0].count("Box Number") == 1 and req.rows[-1][-2:] == ["4", "2"]
