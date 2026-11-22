@@ -1431,8 +1431,11 @@ def _review_flags(body: OrgRequestBody) -> list[bool]:
 
 
 # Written beside each request line on the requests tab (service-account writes only) so HQ can find
-# the supply on the shelf. Taken from the "[Lot X, Box Y, Pallet Z]" the UI appends to the name.
-LOCATION_HEADERS = ("Box Number", "Pallet Number")
+# the supply on the shelf: its box and pallet, from the "[Lot X, Box Y, Pallet Z]" the UI appends to
+# the name, and its Item ID. The inventory has no ID column, so the Item ID is the Image URL of the
+# exact inventory row the line was taken from (unique per row, and what the Hub dashboard matches
+# rows by); blank when that row has no photo or the line wasn't taken off inventory.
+REQUEST_EXTRA_HEADERS = ("Box Number", "Pallet Number", "Item ID")
 
 
 def _box_and_pallet(name: str) -> tuple[str, str]:
@@ -1444,13 +1447,13 @@ def _box_and_pallet(name: str) -> tuple[str, str]:
     return tuple("" if p in ("—", "-") else p for p in (box, pallet))  # type: ignore[return-value]
 
 
-def _location_columns(ws: gspread.Worksheet, header: list[str]) -> dict[str, int]:
-    """0-based column of each LOCATION_HEADERS name on the requests tab. Missing ones are added to
-    the header row after its last filled cell. {} when the header can't be written: the request
-    is then saved without them."""
+def _extra_columns(ws: gspread.Worksheet, header: list[str]) -> dict[str, int]:
+    """0-based column of each REQUEST_EXTRA_HEADERS name on the requests tab. Missing ones are
+    added to the header row after its last filled cell. {} when the header can't be written: the
+    request is then saved without them."""
     names = [str(h).strip() for h in header]
-    cols = {h: names.index(h) for h in LOCATION_HEADERS if h in names}
-    missing = [h for h in LOCATION_HEADERS if h not in cols]
+    cols = {h: names.index(h) for h in REQUEST_EXTRA_HEADERS if h in names}
+    missing = [h for h in REQUEST_EXTRA_HEADERS if h not in cols]
     if not missing:
         return cols
     nxt = max((j for j, h in enumerate(names) if h), default=-1) + 1
@@ -1463,20 +1466,23 @@ def _location_columns(ws: gspread.Worksheet, header: list[str]) -> dict[str, int
     try:
         ws.batch_update(updates)
     except Exception:
-        logger.exception("Couldn't add the box and pallet columns to the requests tab")
+        logger.exception("Couldn't add the box, pallet and item ID columns to the requests tab")
         return {}
     return cols
 
 
-def _with_locations(rows: list[list], body: "OrgRequestBody", cols: dict[str, int]) -> list[list]:
-    """Request rows with each line's box and pallet in the tab's location columns."""
+def _with_extras(rows: list[list], body: "OrgRequestBody", item_ids: dict[int, str],
+                 cols: dict[str, int]) -> list[list]:
+    """Request rows with each line's box, pallet and Item ID (item_ids: line index -> ID) in the
+    tab's extra columns."""
     if not cols:
         return rows
     width = max(cols.values()) + 1
     out = []
-    for row, item in zip(rows, body.items):
+    for n, (row, item) in enumerate(zip(rows, body.items)):
         row = list(row) + [""] * max(0, width - len(row))
-        for h, v in zip(LOCATION_HEADERS, _box_and_pallet(item.item_name)):
+        values = (*_box_and_pallet(item.item_name), item_ids.get(n, ""))
+        for h, v in zip(REQUEST_EXTRA_HEADERS, values):
             row[cols[h]] = _sheet_safe(v)
         out.append(row)
     return out
@@ -1512,14 +1518,11 @@ def _name_key(text: str) -> str:
     return re.sub(r"[^0-9a-z]+", "", _norm_name(text))
 
 
-def _find_inventory_row(values: list, item_name: str, sheet_row: Optional[int], left: dict) -> Optional[int]:
-    """The inventory row (index into values) a request line was picked from.
-
-    The line ends with the row's "[Lot X, Box Y, Pallet Z]", which must match. The row the clinic
-    picked (sheet_row) is used when it still holds that item; rows shift when others are deleted,
-    so otherwise the first row with the same name, lot, box and pallet and units left is used.
-    Names are compared as the site shows them: patient IDs removed, with or without "(Maker)".
-    """
+def _inventory_row_matcher(values: list, item_name: str):
+    """A test (row -> bool) for inventory rows holding this request line's item: the line's
+    trailing "[Lot X, Box Y, Pallet Z]" must match the row's lot, box and pallet, and its name the
+    row's name as the site shows it (patient IDs removed, with or without "(Maker)"). None when
+    the line names no lot or there is no inventory."""
     parts = _lot_parts(item_name)
     if not values or parts is None:
         return None
@@ -1542,8 +1545,30 @@ def _find_inventory_row(values: list, item_name: str, sheet_row: Optional[int], 
         return (not _name_key(shown["Name"])  # unnamed rows are shown under a made-up name
                 or base in names or (bool(maker) and any(base == n + maker for n in names)))
 
+    return matches
+
+
+def _matching_inventory_rows(values: list, item_name: str) -> list[int]:
+    """Every inventory row (index into values) that could be this request line's item."""
+    matches = _inventory_row_matcher(values, item_name)
+    return [i for i in range(1, len(values)) if matches(values[i])] if matches else []
+
+
+def _find_inventory_row(values: list, item_name: str, sheet_row: Optional[int], left: dict) -> Optional[int]:
+    """The inventory row (index into values) a request line was picked from.
+
+    The row must match the line (_inventory_row_matcher). The row the clinic picked (sheet_row) is
+    used when it still holds that item; rows shift when others are deleted, so otherwise the first
+    matching row with units left is used.
+    """
+    matches = _inventory_row_matcher(values, item_name)
+    if matches is None:
+        return None
+    qcol = {name: j for j, name in enumerate(_clean_header(values[0]))}.get("Quantity")
+
     def has_left(i):
-        q = left.get(i, requested_supplies.to_int(cell(values[i], "Quantity")))
+        on_hand = values[i][qcol] if qcol is not None and qcol < len(values[i]) else ""
+        q = left.get(i, requested_supplies.to_int(on_hand))
         return q is not None and q > 0
 
     if sheet_row and 2 <= sheet_row <= len(values) and matches(values[sheet_row - 1]) and has_left(sheet_row - 1):
@@ -1551,16 +1576,47 @@ def _find_inventory_row(values: list, item_name: str, sheet_row: Optional[int], 
     return next((i for i in range(1, len(values)) if matches(values[i]) and has_left(i)), None)
 
 
-def _pull_requested_supplies(spreadsheet, request_id: str, body: "OrgRequestBody") -> None:
+def _inventory_values_for_pull(spreadsheet) -> Optional[list]:
+    """The inventory tab, when the requests tab lives in the inventory spreadsheet (the live site)
+    and so the request's units are taken off it. None otherwise, or when it can't be read."""
+    if getattr(spreadsheet, "id", None) != _inventory_sheet_id():
+        return None
+    try:
+        return spreadsheet.worksheet(INVENTORY_TAB).get_all_values()
+    except Exception:
+        logger.exception("Couldn't read the inventory tab")
+        return None
+
+
+def _item_ids(inventory: Optional[list], body: "OrgRequestBody") -> dict[int, str]:
+    """Line index -> Item ID (the Image URL of the inventory row the line will be taken from), for
+    the lines that will be taken. The same rows requested_supplies.pull then takes."""
+    if not inventory:
+        return {}
+    col = {name: j for j, name in enumerate(_clean_header(inventory[0]))}.get("Image URL")
+    if col is None:
+        return {}
+    lines = [(i.item_name, i.quantity, i.sheet_row) for i in body.items]
+    taken, _ = requested_supplies.plan(inventory, lines, _find_inventory_row)
+    out = {}
+    for n, idx, _units in taken:
+        url = str(inventory[idx][col]).strip() if col < len(inventory[idx]) else ""
+        if url:
+            out[n] = url
+    return out
+
+
+def _pull_requested_supplies(spreadsheet, request_id: str, body: "OrgRequestBody",
+                             inventory: Optional[list] = None) -> None:
     """Take a saved request's units off the inventory tab, when the requests tab lives in the
-    inventory spreadsheet (the live site). Never raises: the lines then keep holding their units
-    through _remaining_by_row, as before."""
+    inventory spreadsheet (the live site). inventory: that tab as already read, if it was. Never
+    raises: the lines then keep holding their units through _remaining_by_row, as before."""
     if getattr(spreadsheet, "id", None) != _inventory_sheet_id():
         return
     try:
         lines = [(i.item_name, i.quantity, i.sheet_row) for i in body.items]
         requested_supplies.pull(spreadsheet, INVENTORY_TAB, request_id, lines, _find_inventory_row,
-                                name=body.org_name, contact=body.org_email)
+                                name=body.org_name, contact=body.org_email, values=inventory)
     except Exception:
         logger.exception("Couldn't take request %s off the inventory tab", request_id)
     finally:
@@ -1645,9 +1701,10 @@ def submit_org_request(body: OrgRequestBody, tasks: BackgroundTasks, request: Re
         # when the web app certainly didn't save it) the service account. "unknown" (e.g. a timeout
         # after sending) may already be saved, so it isn't written again; /health shows the error.
         if _copy_to_request_sheet(request_id, body, flags, ts) == "failed":
-            batch = _with_locations(batch, body, _location_columns(ws, header))
+            inventory = _inventory_values_for_pull(spreadsheet)
+            batch = _with_extras(batch, body, _item_ids(inventory, body), _extra_columns(ws, header))
             ws.append_rows(batch, value_input_option="RAW")
-            _pull_requested_supplies(spreadsheet, request_id, body)
+            _pull_requested_supplies(spreadsheet, request_id, body, inventory)
 
     _queue_submit_emails(tasks, body, request_id, flagged, client_ip)
     return {"request_id": request_id, "status": NEW_REQUEST_STATUS}

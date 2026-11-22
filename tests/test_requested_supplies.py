@@ -110,6 +110,20 @@ def test_a_request_takes_its_units_off_inventory_and_records_them(live):
     assert avail["Exam Gloves"] == 7
 
 
+def test_each_request_line_records_the_item_id_of_the_row_it_was_taken_from(live):
+    import main
+    c, book, inv = live
+    _send(c, ("Exam Gloves [Lot L1, Box 2, Pallet 1]", 3, 2),
+          ("Medical Tape (3M) [Lot —, Box 3, Pallet 5]", 4, 3),
+          ("Nothing Like This [Lot —, Box 9, Pallet 9]", 1, None))  # matches no row: no ID
+    rows = book.tabs["Requests"].rows
+    assert rows[0][-3:] == list(main.REQUEST_EXTRA_HEADERS)
+    assert [r[-3:] for r in rows[1:]] == [["2", "1", "img-1"], ["3", "5", "img-2"], ["9", "9", ""]]
+    # the same rows Requested Supplies recorded
+    tab = book.tabs["Requested Supplies"].rows
+    assert [r[tab[0].index("Image URL")] for r in tab[1:]] == ["img-1", "img-2"]
+
+
 def test_rows_that_moved_are_found_by_name_and_lot_and_patient_ids_are_ignored(live):
     c, book, inv = live
     _send(c, ("FROZEN Pt. ID [removed] PP10 [Lot —, Box 5, Pallet 1]", 1, 2),  # sheet_row is stale
