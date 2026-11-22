@@ -90,14 +90,16 @@ def plan(values: list, lines: list, find_row: FindRow) -> tuple:
 
 
 def pull(spreadsheet, inventory_title: str, request_id: str, lines: list, find_row: FindRow,
-         name: str = "", contact: str = "") -> int:
+         name: str = "", contact: str = "", values: Optional[list] = None) -> int:
     """Take these lines' units off inventory and record them. Returns how many lines were taken.
 
     The record is written first: if the inventory write then fails, the line still counts as
     taken (nothing can be promised twice), and the inventory row needs a look by hand.
+    values: the inventory tab as just read by the caller, to save reading it again.
     """
     inventory = spreadsheet.worksheet(inventory_title)
-    values = inventory.get_all_values()
+    if values is None:
+        values = inventory.get_all_values()
     taken, left = plan(values, lines, find_row)
     if not taken:
         return 0
