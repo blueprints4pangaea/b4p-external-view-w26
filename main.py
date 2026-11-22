@@ -1559,7 +1559,8 @@ def _pull_requested_supplies(spreadsheet, request_id: str, body: "OrgRequestBody
         return
     try:
         lines = [(i.item_name, i.quantity, i.sheet_row) for i in body.items]
-        requested_supplies.pull(spreadsheet, INVENTORY_TAB, request_id, lines, _find_inventory_row)
+        requested_supplies.pull(spreadsheet, INVENTORY_TAB, request_id, lines, _find_inventory_row,
+                                name=body.org_name, contact=body.org_email)
     except Exception:
         logger.exception("Couldn't take request %s off the inventory tab", request_id)
     finally:

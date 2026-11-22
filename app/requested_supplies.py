@@ -22,7 +22,9 @@ from gspread.utils import rowcol_to_a1
 logger = logging.getLogger(__name__)
 
 TAB = "Requested Supplies"
-LEAD = ["Request ID", "Request Item", "Quantity Taken", "Taken At"]
+# Requested By and Contact: the clinic and its email, so the tab reads on its own (aak, 22 Nov 2026).
+# Not "Name": that is an inventory column, copied in after these.
+LEAD = ["Request ID", "Requested By", "Contact", "Request Item", "Quantity Taken", "Taken At"]
 
 # find_row(values, item_name, sheet_row, left) -> index into values (1 = first data row) or None
 FindRow = Callable[[list, str, Optional[int], dict], Optional[int]]
@@ -87,7 +89,8 @@ def plan(values: list, lines: list, find_row: FindRow) -> tuple:
     return taken, left
 
 
-def pull(spreadsheet, inventory_title: str, request_id: str, lines: list, find_row: FindRow) -> int:
+def pull(spreadsheet, inventory_title: str, request_id: str, lines: list, find_row: FindRow,
+         name: str = "", contact: str = "") -> int:
     """Take these lines' units off inventory and record them. Returns how many lines were taken.
 
     The record is written first: if the inventory write then fails, the line still counts as
@@ -104,7 +107,8 @@ def pull(spreadsheet, inventory_title: str, request_id: str, lines: list, find_r
     records = []
     for n, idx, units in taken:
         copied = {name: (values[idx][j] if j < len(values[idx]) else "") for j, name in enumerate(header) if name}
-        lead = {"Request ID": request_id, "Request Item": lines[n][0], "Quantity Taken": units, "Taken At": now}
+        lead = {"Request ID": request_id, "Requested By": name, "Contact": contact, "Request Item": lines[n][0],
+                "Quantity Taken": units, "Taken At": now}
         records.append([lead[c] if c in lead else copied.get(c, "") for c in tab_header])
     ws.append_rows(records, value_input_option="RAW", table_range="A1")
 
