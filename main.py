@@ -1430,6 +1430,58 @@ def _review_flags(body: OrgRequestBody) -> list[bool]:
     return [_review_flag(inventory, i.item_name) for i in body.items]
 
 
+# Written beside each request line on the requests tab (service-account writes only) so HQ can find
+# the supply on the shelf. Taken from the "[Lot X, Box Y, Pallet Z]" the UI appends to the name.
+LOCATION_HEADERS = ("Box Number", "Pallet Number")
+
+
+def _box_and_pallet(name: str) -> tuple[str, str]:
+    """(box, pallet) as written in the item name's trailing "[Lot X, Box Y, Pallet Z]"; blanks without one."""
+    m = LOT_PARTS_RE.search(name.strip())
+    if not m:
+        return "", ""
+    box, pallet = (p.strip() for p in m.groups()[1:])
+    return tuple("" if p in ("—", "-") else p for p in (box, pallet))  # type: ignore[return-value]
+
+
+def _location_columns(ws: gspread.Worksheet, header: list[str]) -> dict[str, int]:
+    """0-based column of each LOCATION_HEADERS name on the requests tab. Missing ones are added to
+    the header row after its last filled cell. {} when the header can't be written: the request
+    is then saved without them."""
+    names = [str(h).strip() for h in header]
+    cols = {h: names.index(h) for h in LOCATION_HEADERS if h in names}
+    missing = [h for h in LOCATION_HEADERS if h not in cols]
+    if not missing:
+        return cols
+    nxt = max((j for j, h in enumerate(names) if h), default=-1) + 1
+    nxt = max(nxt, len(ORG_REQ_HEADERS))
+    updates = []
+    for h in missing:
+        cols[h] = nxt
+        updates.append({"range": gspread.utils.rowcol_to_a1(1, nxt + 1), "values": [[h]]})
+        nxt += 1
+    try:
+        ws.batch_update(updates)
+    except Exception:
+        logger.exception("Couldn't add the box and pallet columns to the requests tab")
+        return {}
+    return cols
+
+
+def _with_locations(rows: list[list], body: "OrgRequestBody", cols: dict[str, int]) -> list[list]:
+    """Request rows with each line's box and pallet in the tab's location columns."""
+    if not cols:
+        return rows
+    width = max(cols.values()) + 1
+    out = []
+    for row, item in zip(rows, body.items):
+        row = list(row) + [""] * max(0, width - len(row))
+        for h, v in zip(LOCATION_HEADERS, _box_and_pallet(item.item_name)):
+            row[cols[h]] = _sheet_safe(v)
+        out.append(row)
+    return out
+
+
 def _org_request_rows(request_id: str, body: "OrgRequestBody", flags: list[bool], ts: str) -> list[list]:
     """A request as rows of the Requests tab (ORG_REQ_HEADERS), one per supply."""
     return [
@@ -1579,9 +1631,9 @@ def submit_org_request(body: OrgRequestBody, tasks: BackgroundTasks, request: Re
     spreadsheet = _open_requests_spreadsheet()
     ws = _org_requests_worksheet(spreadsheet)
     with _claim_lock:  # here the sheet is the store, so the lock covers writing it
+        values = ws.get_all_values()
+        header = values[0] if values else []
         if body.client_request_id:
-            values = ws.get_all_values()
-            header = values[0] if values else []
             existing = [_row_dict(header, r) for r in values[1:] if r and r[0] == request_id]
             if existing:  # already saved: a retry, or a clash
                 if not _same_request(existing, body):
@@ -1592,6 +1644,7 @@ def submit_org_request(body: OrgRequestBody, tasks: BackgroundTasks, request: Re
         # when the web app certainly didn't save it) the service account. "unknown" (e.g. a timeout
         # after sending) may already be saved, so it isn't written again; /health shows the error.
         if _copy_to_request_sheet(request_id, body, flags, ts) == "failed":
+            batch = _with_locations(batch, body, _location_columns(ws, header))
             ws.append_rows(batch, value_input_option="RAW")
             _pull_requested_supplies(spreadsheet, request_id, body)
 

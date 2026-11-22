@@ -550,3 +550,39 @@ def test_formula_text_round_trips_clean_through_sheet(live_sheet, no_email):
     assert req.rows[-1][1] == "'" + name  # stored defanged
     got = c.get("/requests", params={"email": "f@x.org"}).json()
     assert got[0]["Org Name"] == name  # but read back without the apostrophe
+
+
+class _GrowingSheet(FakeWorksheet):
+    """A requests tab whose header row can be extended, like a real sheet."""
+
+    def batch_update(self, updates):
+        for u in updates:
+            row, col = gspread.utils.a1_to_rowcol(u["range"])
+            while len(self.rows[row - 1]) < col:
+                self.rows[row - 1].append("")
+            self.rows[row - 1][col - 1] = u["values"][0][0]
+
+
+def test_sheet_request_rows_carry_box_and_pallet(monkeypatch, no_email):
+    import main
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("USE_SAMPLE_DATA", raising=False)
+    monkeypatch.setenv("GOOGLE_SHEET_ID", "fake-sheet")
+    inv = FakeWorksheet([["Name", "Category", "Quantity", "Review"], ["Gauze", "C", "10", "No"]])
+    req = _GrowingSheet([list(main.ORG_REQ_HEADERS)])  # an older tab without the location columns
+
+    class FakeClient:
+        def open_by_key(self, key):
+            return FakeSpreadsheet(inv, req)
+
+    monkeypatch.setattr(main, "_gspread_client", lambda: FakeClient())
+    c = TestClient(main.app)
+    items = [{"item_name": "Gauze [Lot L1, Box 4, Pallet 2]", "quantity": 1},
+             {"item_name": "Gauze [Lot —, Box —, Pallet 7]", "quantity": 1},
+             {"item_name": "Gauze", "quantity": 1}]
+    assert c.post("/requests", json={"org_name": "O", "org_email": "q@x.org", "items": items}).status_code == 200
+    assert req.rows[0] == list(main.ORG_REQ_HEADERS) + ["Box Number", "Pallet Number"]
+    assert [r[-2:] for r in req.rows[1:]] == [["4", "2"], ["", "7"], ["", ""]]
+    # A second request finds the columns already there and doesn't add them again.
+    assert c.post("/requests", json={"org_name": "O", "org_email": "q@x.org", "items": items[:1]}).status_code == 200
+    assert req.rows[0].count("Box Number") == 1 and req.rows[-1][-2:] == ["4", "2"]
