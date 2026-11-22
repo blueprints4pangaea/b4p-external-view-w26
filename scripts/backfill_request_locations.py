@@ -1,5 +1,4 @@
-"""One-off: fill in Box Number, Pallet Number and Item ID for request lines saved before those
-columns existed.
+"""One-off: fill in Box Number and Pallet Number for request lines saved before those columns existed.
 
 Usage (from the repo root, with GOOGLE_CREDENTIALS_JSON or the service-account key set up as for
 the site):
@@ -17,12 +16,8 @@ For each line, the box and pallet come from, in order:
   3. the inventory tab, only when every inventory row with that item's name sits in the same box
      and pallet. Anything less certain is left blank and listed, for someone to check by hand.
 
-The Item ID (the Image URL of the exact inventory row; the inventory has no ID column) comes from
-the Requested Supplies copy of the row, else the inventory tab when exactly one row has that
-name, lot, box and pallet. It is never guessed: when several identical rows match, it stays blank.
-
 Only empty cells are written, so it never overwrites a number someone typed, and running it twice
-changes nothing the second time. The column headers are added if the tab doesn't have them.
+changes nothing the second time. The two column headers are added if the tab doesn't have them.
 """
 import argparse
 import sys
@@ -40,7 +35,7 @@ from gspread.utils import rowcol_to_a1  # noqa: E402
 import main  # noqa: E402
 from app import requested_supplies  # noqa: E402
 
-BOX, PALLET, ITEM_ID = main.REQUEST_EXTRA_HEADERS
+BOX, PALLET = main.LOCATION_HEADERS
 
 
 def _cell(row: list, j) -> str:
@@ -52,27 +47,17 @@ def _blank(v: str) -> str:
 
 
 def _copied_locations(values: list) -> dict:
-    """(Request ID, Request Item) -> (box, pallet, item id) from the Requested Supplies tab."""
+    """(Request ID, Request Item) -> (box, pallet) from the Requested Supplies tab."""
     if not values:
         return {}
     col = {str(h).strip(): j for j, h in enumerate(values[0])}
     out = {}
     for r in values[1:]:
         key = (_cell(r, col.get("Request ID")), _cell(r, col.get("Request Item")))
-        loc = (_blank(_cell(r, col.get("Box Number"))), _blank(_cell(r, col.get("Pallet Number"))),
-               _cell(r, col.get("Image URL")))
+        loc = (_blank(_cell(r, col.get("Box Number"))), _blank(_cell(r, col.get("Pallet Number"))))
         if key[0] and any(loc):
             out.setdefault(key, loc)
     return out
-
-
-def _exact_item_id(inventory_values: list, item: str) -> str:
-    """The Image URL of the one inventory row this line names; "" when none or several match."""
-    rows = main._matching_inventory_rows(inventory_values, item)
-    if len(rows) != 1:
-        return ""
-    col = {n: j for j, n in enumerate(main._clean_header(inventory_values[0]))}.get("Image URL")
-    return _cell(inventory_values[rows[0]], col)
 
 
 def _inventory_locations(values: list) -> dict:
@@ -95,17 +80,17 @@ def _inventory_locations(values: list) -> dict:
 
 
 def plan(request_values: list, copied_values: list, inventory_values: list) -> tuple[list, list, list]:
-    """(header cells to add, cell updates, lines left without a box or pallet) for the requests tab.
+    """(header cells to add, cell updates, lines left blank) for the requests tab.
 
     Header cells and updates are {"range", "values"} dicts for batch_update; each blank line is
-    (sheet row, Request ID, Item Name, reason). A missing Item ID alone doesn't list a line."""
+    (sheet row, Request ID, Item Name, reason)."""
     if not request_values:
         return [], [], []
     names = [str(h).strip() for h in request_values[0]]
-    cols = {h: names.index(h) for h in main.REQUEST_EXTRA_HEADERS if h in names}
+    cols = {h: names.index(h) for h in (BOX, PALLET) if h in names}
     header_cells = []
     nxt = max(max((j for j, h in enumerate(names) if h), default=-1) + 1, len(main.ORG_REQ_HEADERS))
-    for h in main.REQUEST_EXTRA_HEADERS:
+    for h in (BOX, PALLET):
         if h not in cols:
             cols[h] = nxt
             header_cells.append({"range": rowcol_to_a1(1, nxt + 1), "values": [[h]]})
@@ -119,25 +104,24 @@ def plan(request_values: list, copied_values: list, inventory_values: list) -> t
         rid, item = _cell(row, rid_j), _cell(row, item_j)
         if not rid and not item:
             continue
-        have = {h: _cell(row, cols[h]) for h in main.REQUEST_EXTRA_HEADERS}
+        have = {h: _cell(row, cols[h]) for h in (BOX, PALLET)}
         if all(have.values()):
             continue
-        copy = copied.get((rid, item))
         loc, reason = None, ""
         if main.LOT_PARTS_RE.search(item):
             loc = main._box_and_pallet(item)
-        elif copy:
-            loc = copy[:2]
+        elif (rid, item) in copied:
+            loc = copied[(rid, item)]
         else:
             found = inventory.get(main._name_key(main._base_item_name(item)), set())
             if len(found) == 1:
                 loc = next(iter(found))
             else:
                 reason = "not in inventory any more" if not found else f"in {len(found)} different boxes/pallets"
-        if (loc is None or not any(loc)) and not (have[BOX] or have[PALLET]):
+        if loc is None or not any(loc):
             blank.append((i, rid, item, reason or "no box or pallet recorded"))
-        item_id = (copy[2] if copy else "") or (_exact_item_id(inventory_values, item) if not have[ITEM_ID] else "")
-        for h, v in zip(main.REQUEST_EXTRA_HEADERS, (*(loc or ("", "")), item_id)):
+            continue
+        for h, v in zip((BOX, PALLET), loc):
             if v and not have[h]:
                 updates.append({"range": rowcol_to_a1(i, cols[h] + 1), "values": [[main._sheet_safe(v)]]})
     return header_cells, updates, blank
@@ -167,7 +151,7 @@ def run() -> None:
         print(f"add header {h['values'][0][0]!r} at {h['range']}")
     print(f"{len(updates)} cells to fill on '{args.tab}'.")
     if blank:
-        print(f"\n{len(blank)} lines left without a box or pallet (check these by hand):")
+        print(f"\n{len(blank)} lines left blank (check these by hand):")
         for row, rid, item, reason in blank:
             print(f"  row {row}  {rid}  {item}  ({reason})")
     if not args.apply:
