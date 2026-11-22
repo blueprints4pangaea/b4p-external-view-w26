@@ -98,9 +98,12 @@ def test_a_request_takes_its_units_off_inventory_and_records_them(live):
     assert names == ["Exam Gloves", "FROZEN Pt. ID 6529865018-12 PP10"]  # tape taken whole: row gone
     assert inv.rows[1][5] == "7"  # gloves taken in part
     tab = book.tabs["Requested Supplies"].rows
-    assert tab[0][:4] == ["Request ID", "Request Item", "Quantity Taken", "Taken At"]
-    assert tab[0][4:] == INV_HEADER
-    assert [(r[0], r[2], r[tab[0].index("Image URL")]) for r in tab[1:]] == [(rid, "3", "img-1"), (rid, "4", "img-2")]
+    assert tab[0][:6] == ["Request ID", "Requested By", "Contact", "Request Item", "Quantity Taken", "Taken At"]
+    assert tab[0][6:] == INV_HEADER
+    col = tab[0].index
+    assert [(r[0], r[col("Quantity Taken")], r[col("Image URL")]) for r in tab[1:]] == [(rid, "3", "img-1"),
+                                                                                       (rid, "4", "img-2")]
+    assert (tab[1][1], tab[1][2]) == ("Clinic", "c@example.org")  # who asked
     assert tab[1][tab[0].index("Quantity")] == "10"  # the copy keeps what the row held
     # nothing is subtracted twice: availability is what's left on the sheet
     avail = {a["item_name"]: a["remaining"] for a in c.get("/inventory/availability").json()}
@@ -119,7 +122,7 @@ def test_two_lines_from_one_row_never_take_more_than_it_has(live):
     c, book, inv = live
     _send(c, ("Exam Gloves [Lot L1, Box 2, Pallet 1]", 6, 2), ("Exam Gloves [Lot L1, Box 2, Pallet 1]", 4, 2))
     assert inv.rows[1][3] == "Medical Tape"  # 10 taken: the gloves row is gone
-    assert [r[2] for r in book.tabs["Requested Supplies"].rows[1:]] == ["6", "4"]
+    assert [r[4] for r in book.tabs["Requested Supplies"].rows[1:]] == ["6", "4"]
 
 
 def test_new_requests_say_requested(live):
@@ -144,3 +147,12 @@ def test_another_spreadsheet_for_requests_takes_nothing_off(live, monkeypatch):
     monkeypatch.setattr(main, "_inventory_sheet_id", lambda: "some-other-sheet")
     _send(c, ("Exam Gloves [Lot L1, Box 2, Pallet 1]", 3, 2))
     assert inv.rows[1][5] == "10" and "Requested Supplies" not in book.tabs
+
+
+def test_a_tab_made_before_name_and_contact_keeps_its_columns(live):
+    c, book, inv = live
+    old = ["Request ID", "Request Item", "Quantity Taken", "Taken At"] + INV_HEADER
+    book.tabs["Requested Supplies"] = Sheet([old])
+    rid = _send(c, ("Exam Gloves [Lot L1, Box 2, Pallet 1]", 3, 2))
+    tab = book.tabs["Requested Supplies"].rows
+    assert tab[0] == old and tab[1][:3] == [rid, "Exam Gloves [Lot L1, Box 2, Pallet 1]", "3"]
